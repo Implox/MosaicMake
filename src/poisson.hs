@@ -6,17 +6,13 @@ module Poisson (
 
 import Control.Applicative ((<$>), (<*>))
 import Control.Monad
-import Control.Monad.Random (getRandomR)
 import Data.Array.IArray
 import Data.Map (Map)
 import Generics.Pointless.Combinators (andf)
-import System.Random 
-import qualified Control.Monad.Random
 import qualified Data.Map.Strict as Map
 
 import Geometry
-
-type Rand = Control.Monad.Random.Rand StdGen
+import Random
 
 data Configuration = Configuration {
     topLeft         :: Vector,
@@ -31,15 +27,15 @@ data Configuration = Configuration {
 } deriving (Show)
 
 makeConfig :: Vector -> Vector -> Float -> Int -> Configuration
-makeConfig tl lr minDist perIter =
+makeConfig tl lr minimumDist perIter =
     let dim@(Vector dimX dimY)= lr `vSub` tl
-        cSize = minDist / sqrt 2.0 in 
+        cSize = minimumDist / sqrt 2.0 in 
             Configuration { 
                 topLeft = tl,
                 lowerRight = lr,
-                center = tl `vAdd` (scaleUniform dim 0.5),
+                center = tl `vAdd` scaleUniform dim 0.5,
                 dimensions = dim,
-                minDist = minDist,
+                minDist = minimumDist,
                 cellSize = cSize,
                 ptsPerIter = perIter,
                 gridWidth = ceiling (dimX / cSize),
@@ -59,10 +55,17 @@ initGrid width height = array ((0, 0), (iMax, jMax)) initVal
 type ActiveMap = Map Vector Bool
 data GridState = GridState Grid ActiveMap deriving (Show)
 
+denormalize :: Configuration -> Vector -> GridIndex 
+denormalize cfg p = mapTuple truncate (xCoord, yCoord)
+    where mapTuple f (a, b) = (f a, f b)
+          origin = topLeft cfg
+          cSize = cellSize cfg
+          (Vector xCoord yCoord) = (p `vSub` origin) `scaleUniform` (1.0 / cSize)
+
 -- Adds a point to the given gridstate
 addPoint :: Configuration -> GridState -> Vector -> GridState
 addPoint cfg (GridState grid activeMap) p = GridState newGrid newActiveMap where
-    pIndex = denormalize p (topLeft cfg) (cellSize cfg)
+    pIndex = denormalize cfg p 
     newGrid = grid // [(pIndex, Just p)]
     newActiveMap = Map.insert p True activeMap
 
@@ -70,19 +73,6 @@ addPoint cfg (GridState grid activeMap) p = GridState newGrid newActiveMap where
 toggleActive :: GridState -> Vector -> GridState
 toggleActive (GridState grid activeMap) basePoint = GridState grid updatedMap
     where updatedMap = Map.adjust not basePoint activeMap
-
-denormalize :: Vector -> Vector -> Float -> GridIndex 
-denormalize p origin cellSize = mapTuple truncate (xCoord, yCoord)
-    where mapTuple f (a, b) = (f a, f b)
-          (Vector xCoord yCoord) = (p `vSub` origin) `scaleUniform` (1.0 / cellSize)
-
--- Creates a random value in the range [0.0, 1.0]
-randFloat :: () -> Rand Float
-randFloat () = getRandomR (0.0, 1.0)
-
--- Creates a random integer in the range [0, max)
-randInt :: Int -> Rand Int
-randInt max = getRandomR (0, max - 1)
 
 -- Ensures a point is within the boundaries set by a given configuration
 inBounds :: Configuration -> Vector -> Bool
@@ -95,23 +85,23 @@ initGridState :: Configuration -> Rand GridState
 initGridState cfg = do
     randXY <- (,) <$> randFloat () <*> randFloat () 
     let offset = scale (dimensions cfg) randXY 
-        p = (topLeft cfg) `vAdd` offset
-        initCoord = denormalize p (topLeft cfg) (cellSize cfg)
+        p = topLeft cfg `vAdd` offset
+        initCoord = denormalize cfg p 
         activeMap = Map.singleton p True
-        grid = (initGrid (gridWidth cfg) (gridHeight cfg)) // [(initCoord, Just p)]
+        grid = initGrid (gridWidth cfg) (gridHeight cfg) // [(initCoord, Just p)]
     if inBounds cfg p then return $ GridState grid activeMap 
     else initGridState cfg 
 
 -- Checks if a point is too close any other point on the grid
 tooClose :: Configuration -> (GridIndex -> GridValue) -> Vector -> Bool
 tooClose cfg getGridVal p = any isTooClose gridVals where
-    (pxIndex, pyIndex) = denormalize p (topLeft cfg) (cellSize cfg)
+    (pxIndex, pyIndex) = denormalize cfg p 
     lowX = max 0 (pxIndex - 2)
     lowY = max 0 (pyIndex - 2)
-    highX = (min (gridWidth cfg) (pxIndex + 3)) - 1
-    highY = (min (gridHeight cfg) (pyIndex + 3)) - 1 
+    highX = min (gridWidth cfg) (pxIndex + 3) - 1
+    highY = min (gridHeight cfg) (pyIndex + 3) - 1 
     gridVals = [getGridVal (x, y) | x <- [lowX .. highX], y <- [lowY .. highY]] 
-    isTooClose (Just gridVal) = (gridVal `dist` p) < (minDist cfg)
+    isTooClose (Just gridVal) = gridVal `dist` p < minDist cfg
     isTooClose Nothing        = False 
 
 -- Creates a random offset and adds it to a given base point
