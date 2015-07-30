@@ -39,7 +39,7 @@ discretize cfg p = mapTuple truncate (xCoord, yCoord)
           cSize = cellSize cfg
           (Vector xCoord yCoord) = (p `vSub` origin) `scaleUniform` (1.0 / cSize)
 
--- Adds a point to the given gridstate
+-- Adds a point to the given grid state
 addPoint :: Config -> GridState -> Point -> GridState
 addPoint cfg (GridState grid activeMap) p = GridState newGrid newActiveMap where
     pIndex = discretize cfg p 
@@ -63,10 +63,9 @@ initGridState cfg = do
     randXY <- (,) <$> randFloat () <*> randFloat () 
     let offset = scale (dimensions cfg) randXY 
         p = topLeft cfg `vAdd` offset
-        initCoord = discretize cfg p 
-        activeMap = Map.singleton p True
-        grid = initGrid (gridWidth cfg) (gridHeight cfg) // [(initCoord, Just p)]
-    if inBounds cfg p then return $ GridState grid activeMap 
+        grid = initGrid (gridWidth cfg) (gridHeight cfg) 
+        gState = GridState grid Map.empty
+    if inBounds cfg p then return $! addPoint cfg gState p
     else initGridState cfg 
 
 -- Checks if a point is too close any other point on the grid
@@ -82,7 +81,7 @@ tooClose cfg getGridVal p = any isTooClose gridVals where
     isTooClose Nothing        = False 
 
 -- Creates a random offset and adds it to a given base point
-makeRandomPoint :: Config -> Point -> Rand Vector
+makeRandomPoint :: Config -> Point -> Rand Point
 makeRandomPoint cfg basePoint = do
     rScale <- randFloat ()
     tScale <- randFloat ()
@@ -93,26 +92,40 @@ makeRandomPoint cfg basePoint = do
     return $ basePoint `vAdd` offset
 
 -- Picks a base point for the next set of random samples
-pickBasePoint :: [Vector] -> Rand Vector
+pickBasePoint :: [Point] -> Rand Point
 pickBasePoint activePoints = liftM (activePoints !!) (randInt $ length activePoints) 
 
--- Returns all valid random points sampled from the given base point
-sampleFromBasePoint :: Config -> GridState -> Vector -> Rand [Vector]
-sampleFromBasePoint cfg (GridState grid _) basePoint = liftM (filter isValidPoint) samples where
-    getGridVal = (grid !)
-    isValidPoint = andf (inBounds cfg, not . tooClose cfg getGridVal)
-    samples = replicateM (ptsPerIter cfg) (makeRandomPoint cfg basePoint)
+-- Samples a single point, and updates the grid state if the point is valid
+sampleBasePointOnce :: Config -> Point -> GridState -> Rand GridState
+sampleBasePointOnce cfg basePoint gState@(GridState grid _) = do
+    let getGridVal = (grid !)
+        isValidPoint = andf (inBounds cfg, not . tooClose cfg getGridVal)
+    sample <- makeRandomPoint cfg basePoint
+    if isValidPoint $ sample then return $! addPoint cfg gState sample
+    else return gState
 
+-- Repeatedly samples points from a given base point, updating
+-- the grid state incrementally
+sampleBasePoint :: Config -> Point -> GridState -> Rand GridState
+sampleBasePoint cfg basePoint = foldr (<=<) return $ replicate n doSample
+    where n = ptsPerIter cfg
+          doSample = sampleBasePointOnce cfg basePoint
+
+-- Samples a given grid state repeatedly, deactivating base points
+-- which fail to yield any new samples
 sample :: Config -> Rand GridState -> Rand GridState
 sample cfg gridState = do
     gState@(GridState _ activeMap) <- gridState
     let activePoints = map fst . filter snd . Map.assocs $ activeMap 
     if null activePoints then gridState
     else do
-        basePoint <- pickBasePoint activePoints
-        samples <- sampleFromBasePoint cfg gState basePoint 
-        if null samples then sample cfg . return $ toggleActive gState basePoint
-        else sample cfg . return $ foldl (addPoint cfg) gState samples
+        basePoint <- pickBasePoint activePoints 
+        newGState@(GridState _ newActiveMap) <- sampleBasePoint cfg basePoint gState
+        if activeMap == newActiveMap then
+            sample cfg . return $! toggleActive newGState basePoint
+        else sample cfg . return $! newGState
 
-generatePoints :: Config -> Rand GridState
-generatePoints cfg = sample cfg $ initGridState cfg
+-- Generate a set of random coordinate points using the Poisson-disc sampling algorithm
+generatePoints :: Config -> Rand [Vector]
+generatePoints cfg = (sample cfg $ initGridState cfg) >>= (\(GridState _ activeMap) -> 
+    return . map fst . Map.assocs $ activeMap)
