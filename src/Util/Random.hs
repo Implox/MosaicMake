@@ -1,4 +1,9 @@
-module Util.Random where
+module Util.Random (
+    Rand,
+    randFloat,
+    randInt,
+    R.evalRandIO
+) where
 
 import Control.Monad.Random (getRandomR)
 import System.Random 

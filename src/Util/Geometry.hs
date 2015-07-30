@@ -22,7 +22,7 @@ scaleUniform u k = scale u (k, k)
 -- The squared magnitude of a vector
 sqMag :: Vector -> Float
 sqMag (Vector x y) = x * x + y * y
- 
+
 -- The magnitude of a vector
 mag :: Vector -> Float
 mag = sqrt . sqMag
