@@ -1,6 +1,6 @@
 module Poisson (
-    Configuration,
-    makeConfig,
+    mkConfig,
+    mkConfigForImg,
     generatePoints
 ) where
 
@@ -11,91 +11,68 @@ import Data.Map (Map)
 import Generics.Pointless.Combinators (andf)
 import qualified Data.Map.Strict as Map
 
-import Geometry
-import Random
+import Poisson.Config
+import Util.Geometry
+import Util.Random
 
-data Configuration = Configuration {
-    topLeft         :: Vector,
-    lowerRight      :: Vector,
-    center          :: Vector,
-    dimensions      :: Vector,
-    minDist         :: Float,
-    cellSize        :: Float,
-    ptsPerIter      :: Int,
-    gridWidth       :: Int,
-    gridHeight      :: Int 
-} deriving (Show)
-
-makeConfig :: Vector -> Vector -> Float -> Int -> Configuration
-makeConfig tl lr minimumDist perIter =
-    let dim@(Vector dimX dimY)= lr `vSub` tl
-        cSize = minimumDist / sqrt 2.0 in 
-            Configuration { 
-                topLeft = tl,
-                lowerRight = lr,
-                center = tl `vAdd` scaleUniform dim 0.5,
-                dimensions = dim,
-                minDist = minimumDist,
-                cellSize = cSize,
-                ptsPerIter = perIter,
-                gridWidth = ceiling (dimX / cSize),
-                gridHeight = ceiling (dimY / cSize) 
-            }
-
+type Point = Vector
 type GridIndex = (Int, Int)
 type GridValue = Maybe Vector
 type Grid = Array GridIndex GridValue 
+type ActiveMap = Map Vector Bool
 
+-- Contains relevant information about a grid at a given time during sampling
+data GridState = GridState Grid ActiveMap deriving (Show)
+
+-- Initialize an empty grid
 initGrid :: Int -> Int -> Grid
 initGrid width height = array ((0, 0), (iMax, jMax)) initVal
     where iMax = width - 1
           jMax = height - 1
           initVal = [((i, j), Nothing) | i <- [0..iMax], j <- [0..jMax]]
 
-type ActiveMap = Map Vector Bool
-data GridState = GridState Grid ActiveMap deriving (Show)
-
-denormalize :: Configuration -> Vector -> GridIndex 
-denormalize cfg p = mapTuple truncate (xCoord, yCoord)
+-- Gets the grid index which contains the given point
+discretize :: Config -> Point -> GridIndex 
+discretize cfg p = mapTuple truncate (xCoord, yCoord)
     where mapTuple f (a, b) = (f a, f b)
           origin = topLeft cfg
           cSize = cellSize cfg
           (Vector xCoord yCoord) = (p `vSub` origin) `scaleUniform` (1.0 / cSize)
 
 -- Adds a point to the given gridstate
-addPoint :: Configuration -> GridState -> Vector -> GridState
+addPoint :: Config -> GridState -> Point -> GridState
 addPoint cfg (GridState grid activeMap) p = GridState newGrid newActiveMap where
-    pIndex = denormalize cfg p 
+    pIndex = discretize cfg p 
     newGrid = grid // [(pIndex, Just p)]
     newActiveMap = Map.insert p True activeMap
 
 -- Toggles the active status of a given base point, returning the updated GridState
-toggleActive :: GridState -> Vector -> GridState
+toggleActive :: GridState -> Point -> GridState
 toggleActive (GridState grid activeMap) basePoint = GridState grid updatedMap
     where updatedMap = Map.adjust not basePoint activeMap
 
 -- Ensures a point is within the boundaries set by a given configuration
-inBounds :: Configuration -> Vector -> Bool
+inBounds :: Config -> Point -> Bool
 inBounds cfg (Vector x y) = minX <= x && x < maxX && minY <= y && y < maxY
     where (Vector minX minY) = topLeft cfg
           (Vector maxX maxY) = lowerRight cfg
 
 -- Creates a grid state with an initial random point
-initGridState :: Configuration -> Rand GridState
+initGridState :: Config -> Rand GridState
 initGridState cfg = do
     randXY <- (,) <$> randFloat () <*> randFloat () 
     let offset = scale (dimensions cfg) randXY 
         p = topLeft cfg `vAdd` offset
-        initCoord = denormalize cfg p 
+        initCoord = discretize cfg p 
         activeMap = Map.singleton p True
         grid = initGrid (gridWidth cfg) (gridHeight cfg) // [(initCoord, Just p)]
     if inBounds cfg p then return $ GridState grid activeMap 
     else initGridState cfg 
 
 -- Checks if a point is too close any other point on the grid
-tooClose :: Configuration -> (GridIndex -> GridValue) -> Vector -> Bool
+tooClose :: Config -> (GridIndex -> GridValue) -> Point -> Bool
 tooClose cfg getGridVal p = any isTooClose gridVals where
-    (pxIndex, pyIndex) = denormalize cfg p 
+    (pxIndex, pyIndex) = discretize cfg p 
     lowX = max 0 (pxIndex - 2)
     lowY = max 0 (pyIndex - 2)
     highX = min (gridWidth cfg) (pxIndex + 3) - 1
@@ -105,7 +82,7 @@ tooClose cfg getGridVal p = any isTooClose gridVals where
     isTooClose Nothing        = False 
 
 -- Creates a random offset and adds it to a given base point
-makeRandomPoint :: Configuration -> Vector -> Rand Vector
+makeRandomPoint :: Config -> Point -> Rand Vector
 makeRandomPoint cfg basePoint = do
     rScale <- randFloat ()
     tScale <- randFloat ()
@@ -120,13 +97,13 @@ pickBasePoint :: [Vector] -> Rand Vector
 pickBasePoint activePoints = liftM (activePoints !!) (randInt $ length activePoints) 
 
 -- Returns all valid random points sampled from the given base point
-sampleFromBasePoint :: Configuration -> GridState -> Vector -> Rand [Vector]
+sampleFromBasePoint :: Config -> GridState -> Vector -> Rand [Vector]
 sampleFromBasePoint cfg (GridState grid _) basePoint = liftM (filter isValidPoint) samples where
     getGridVal = (grid !)
     isValidPoint = andf (inBounds cfg, not . tooClose cfg getGridVal)
     samples = replicateM (ptsPerIter cfg) (makeRandomPoint cfg basePoint)
 
-sample :: Configuration -> Rand GridState -> Rand GridState
+sample :: Config -> Rand GridState -> Rand GridState
 sample cfg gridState = do
     gState@(GridState _ activeMap) <- gridState
     let activePoints = map fst . filter snd . Map.assocs $ activeMap 
@@ -137,5 +114,5 @@ sample cfg gridState = do
         if null samples then sample cfg . return $ toggleActive gState basePoint
         else sample cfg . return $ foldl (addPoint cfg) gState samples
 
-generatePoints :: Configuration -> Rand GridState
-generatePoints cfg = sample cfg . initGridState $ cfg
+generatePoints :: Config -> Rand GridState
+generatePoints cfg = sample cfg $ initGridState cfg

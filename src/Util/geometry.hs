@@ -1,7 +1,7 @@
-module Geometry where
+module Util.Geometry where
 
 -- Represents a vector in 2-space
-data Vector = Vector Float Float deriving (Eq, Ord, Show)
+data Vector = Vector !Float !Float deriving (Eq, Ord, Show)
 
 -- The sum of two vectors
 vAdd :: Vector -> Vector -> Vector
