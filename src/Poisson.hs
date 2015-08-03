@@ -127,5 +127,6 @@ sample cfg gridState = do
 
 -- Generate a set of random coordinate points using the Poisson-disc sampling algorithm
 generatePoints :: Config -> Rand [Vector]
-generatePoints cfg = (sample cfg $ initGridState cfg) >>= (\(GridState _ activeMap) -> 
-    return . map fst . Map.assocs $ activeMap)
+generatePoints cfg = liftM getPts grid
+    where grid = sample cfg $ initGridState cfg
+          getPts (GridState _ activeMap) = map fst . Map.assocs $ activeMap
